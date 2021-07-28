@@ -19,6 +19,15 @@ from pixel_cnn_pp.model import model_spec
 import data.cifar10_data as cifar10_data
 import data.f_mnist_data as f_mnist_data
 
+download = False
+use_gpu = False
+
+#print(tf.Session(config=tf.ConfigProto(log_device_placement=True)))
+
+#from tensorflow.python.client import device_lib
+#print(device_lib.list_local_devices())
+#exit()
+
 # -----------------------------------------------------------------------------
 parser = argparse.ArgumentParser()
 # data I/O
@@ -79,6 +88,17 @@ if args.data_set == 'f_mnist':
 elif args.data_set == 'cifar':
     args.data_dir = os.path.join("results", "data", "cifar_clean")
 
+if download:
+    train_data = DataLoader(args.data_dir, 'train', args.batch_size * args.nr_gpu,
+                            rng=rng, shuffle=True, return_labels=args.class_conditional, download=True)
+    exit()
+
+device_prefix = ""
+if use_gpu:
+    device_prefix = "gpu"
+else:
+    device_prefix = "cpu"
+
 train_data = DataLoader(args.data_dir, 'train', args.batch_size * args.nr_gpu,
                         rng=rng, shuffle=True, return_labels=args.class_conditional)
 test_data = DataLoader(args.data_dir, 'test', args.batch_size *
@@ -136,7 +156,7 @@ logits_gen = []
 loss_gen_test = []
 logits_gen_test = []
 for i in range(args.nr_gpu):
-    with tf.device('/gpu:%d' % i):
+    with tf.device('/%s:%d' % (device_prefix, i)):
         # train
         gen_par = model(xs[i], hs[i], ema=None, dropout_p=args.dropout_p, **model_opt)
         logits_gen.append(nn.mix_logistic_to_logits(xs[i], gen_par, data_set=args.data_set))
@@ -150,7 +170,7 @@ for i in range(args.nr_gpu):
 
 # add losses and gradients together and get training updates
 tf_lr = tf.placeholder(tf.float32, shape=[])
-with tf.device('/gpu:0'):
+with tf.device('/%s:0' % device_prefix):
     for i in range(1, args.nr_gpu):
         loss_gen[0] += loss_gen[i]
         loss_gen_test[0] += loss_gen_test[i]
@@ -167,9 +187,10 @@ bits_per_dim_test = loss_gen_test[0] / (args.nr_gpu * np.log(2.) * np.prod(obs_s
 # sample from the model
 new_x_gen = []
 for i in range(args.nr_gpu):
-    with tf.device('/gpu:%d' % i):
+    with tf.device('/%s:%d' % (device_prefix, i)):
         gen_par = model(xs[i], h_sample[i], ema=ema, dropout_p=0, **model_opt)
-        new_x_gen.append(nn.sample_from_softmax(xs[i], gen_par, data_set=args.data_set))
+        sample = nn.sample_from_softmax(xs[i], gen_par, data_set=args.data_set)
+        new_x_gen.append(sample)
 
 
 def sample_from_model(sess):

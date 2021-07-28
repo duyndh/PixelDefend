@@ -1,1 +1,4 @@
 .idea/*
+/data/__pycache__/*
+/pixel_cnn_pp/__pycache__/*
+/results/*

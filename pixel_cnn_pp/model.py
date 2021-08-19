@@ -6,7 +6,30 @@ The core Pixel-CNN model
 import tensorflow as tf
 from tensorflow.contrib.framework.python.ops import arg_scope
 import pixel_cnn_pp.nn as nn
+import psutil
+import gc
 
+# import pickle
+# import zlib
+# import numpy as np
+
+# def compress(obj):
+#     return zlib.compress(pickle.dumps(obj))
+
+# def decompress(obj):
+#     return pickle.loads(zlib.decompress(obj))
+
+# def compute_compressed_gated_resnet(compressed_element1, compressed_element2, conv):
+#     if compressed_element2 is None:
+#         return compress(nn.gated_resnet(decompress(compressed_element1), conv=conv))
+#     else:
+#         return compress(nn.gated_resnet(decompress(compressed_element1), decompress(compressed_element2), conv=conv))
+
+# def compute_compressed_shifted_conv2d(conv, compressed_element, nr_filters, stride):
+#     return compress(conv(decompress(compressed_element), num_filters=nr_filters, stride=stride))
+
+def get_resources_info():
+    return {"CPU (%)": psutil.cpu_percent(), "RAM (%)": psutil.virtual_memory().percent}
 
 def model_spec(x, h=None, init=False, ema=None, dropout_p=0.5, nr_resnet=5, nr_filters=160, nr_logistic_mix=10,
                resnet_nonlinearity='concat_elu', data_set='cifar'):
@@ -40,98 +63,151 @@ def model_spec(x, h=None, init=False, ema=None, dropout_p=0.5, nr_resnet=5, nr_f
             # add channel of ones to distinguish image from padding later on
             x_pad = tf.concat([x, tf.ones(xs[:-1] + [1])], 3)
 
-            u_list = [nn.down_shift(nn.down_shifted_conv2d(
-                x_pad, num_filters=nr_filters, filter_size=[2, 3]))]  # stream for pixels above
+            print("> initializing streams")
+            print("> starting up pass")
+            print(">", get_resources_info())
+            
+            # stream for pixels above
+            t_u_list = []
+            t_u_list.append(nn.down_shift(nn.down_shifted_conv2d(x_pad, num_filters=nr_filters, filter_size=[2, 3])))  # stream for pixels above
 
-            ul_list = [nn.down_shift(nn.down_shifted_conv2d(x_pad, num_filters=nr_filters, filter_size=[1, 3])) +
-                       nn.right_shift(nn.down_right_shifted_conv2d(x_pad, num_filters=nr_filters, filter_size=[2, 1]))]  # stream for up and to the left
+            # stream for up and to the left
+            t_ul_list = []
+            t_ul_list.append(nn.down_shift(nn.down_shifted_conv2d(x_pad, num_filters=nr_filters, filter_size=[1, 3])) +
+                       nn.right_shift(nn.down_right_shifted_conv2d(x_pad, num_filters=nr_filters, filter_size=[2, 1])))  # stream for up and to the left
 
-            print("LOOP", "gated_resnet", nr_resnet)
+            print(">", get_resources_info())
+            print("> len(t_u_list):", len(t_u_list))
+            print("> len(t_ul_list):", len(t_ul_list))
+
+            print("> getting up-pass gated_resnet (1)")
+            for rep in range(nr_resnet):
+                t_u_list.append(nn.gated_resnet(t_u_list[-1], conv=nn.down_shifted_conv2d))
+                t_ul_list.append(nn.gated_resnet(t_ul_list[-1], t_u_list[-1], conv=nn.down_right_shifted_conv2d))
+
+            print(">", get_resources_info())
+            print("> len(t_u_list):", len(t_u_list))
+            print("> len(t_ul_list):", len(t_ul_list))
+    
+            print("> getting up-pass shifted_conv2d (2)")
+            
+            t_u_list.append(nn.down_shifted_conv2d(t_u_list[-1], num_filters=nr_filters, stride=[2, 2]))
+            t_ul_list.append(nn.down_right_shifted_conv2d(t_ul_list[-1], num_filters=nr_filters, stride=[2, 2]))
+
+            print(">", get_resources_info())
+            print("> len(t_u_list):", len(t_u_list))
+            print("> len(t_ul_list):", len(t_ul_list))
+
+            print("> getting up-pass gated_resnet (3)")
             
             for rep in range(nr_resnet):
+                t_u_list.append(nn.gated_resnet(t_u_list[-1], conv=nn.down_shifted_conv2d))
+                t_ul_list.append(nn.gated_resnet(t_ul_list[-1], t_u_list[-1], conv=nn.down_right_shifted_conv2d))
 
-                u_list.append(nn.gated_resnet(
-                    u_list[-1], conv=nn.down_shifted_conv2d))
-                ul_list.append(nn.gated_resnet(
-                    ul_list[-1], u_list[-1], conv=nn.down_right_shifted_conv2d))
+            print(">", get_resources_info())
+            print("> len(t_u_list):", len(t_u_list))
+            print("> len(t_ul_list):", len(t_ul_list))
+            
+            print("> getting up-pass shifted_conv2d (4)")
+            
+            t_u_list.append(nn.down_shifted_conv2d(t_u_list[-1], num_filters=nr_filters, stride=[2, 2]))
+            t_ul_list.append(nn.down_right_shifted_conv2d(t_ul_list[-1], num_filters=nr_filters, stride=[2, 2]))
 
-            u_list.append(nn.down_shifted_conv2d(
-                u_list[-1], num_filters=nr_filters, stride=[2, 2]))
+            print(">", get_resources_info())
+            print("> len(t_u_list):", len(t_u_list))
+            print("> len(t_ul_list):", len(t_ul_list))
 
-            ul_list.append(nn.down_right_shifted_conv2d(
-                ul_list[-1], num_filters=nr_filters, stride=[2, 2]))
-
-            print("LOOP", "shifted_conv2d (1)", nr_resnet)
+            print("> getting up-pass gated_resnet (5)")
             
             for rep in range(nr_resnet):
+                t_u_list.append(nn.gated_resnet(t_u_list[-1], conv=nn.down_shifted_conv2d))
+                t_ul_list.append(nn.gated_resnet(t_ul_list[-1], t_u_list[-1], conv=nn.down_right_shifted_conv2d))
 
-                u_list.append(nn.gated_resnet(
-                    u_list[-1], conv=nn.down_shifted_conv2d))
-                ul_list.append(nn.gated_resnet(
-                    ul_list[-1], u_list[-1], conv=nn.down_right_shifted_conv2d))
-
-            u_list.append(nn.down_shifted_conv2d(
-                u_list[-1], num_filters=nr_filters, stride=[2, 2]))
-            ul_list.append(nn.down_right_shifted_conv2d(
-                ul_list[-1], num_filters=nr_filters, stride=[2, 2]))
-
-            print("LOOP", "shifted_conv2d (2)", nr_resnet)
-
-            for rep in range(nr_resnet):
-
-                u_list.append(nn.gated_resnet(
-                    u_list[-1], conv=nn.down_shifted_conv2d))
-                ul_list.append(nn.gated_resnet(
-                    ul_list[-1], u_list[-1], conv=nn.down_right_shifted_conv2d))
-
-            print("LOOP", "shifted_conv2d (3)", nr_resnet)
+            print(">", get_resources_info())
+            print("> len(t_u_list):", len(t_u_list))
+            print("> len(t_ul_list):", len(t_ul_list))
             
             # /////// down pass ////////
-            u = u_list.pop()
-            ul = ul_list.pop()
+            print("> starting down pass")
+
+            t_u = t_u_list.pop()
+            t_ul = t_ul_list.pop()
+
+            print(">", get_resources_info())
+            print("> len(t_u_list):", len(t_u_list))
+            print("> len(t_ul_list):", len(t_ul_list))
+
+            print("> getting down-pass gated_resnet (5)")
+            
             for rep in range(nr_resnet):
+                t_u = nn.gated_resnet(t_u, t_u_list.pop(), conv=nn.down_shifted_conv2d)
+                t_ul = nn.gated_resnet(t_ul, tf.concat([t_u, t_ul_list.pop()], 3), conv=nn.down_right_shifted_conv2d)
 
-                u = nn.gated_resnet(
-                    u, u_list.pop(), conv=nn.down_shifted_conv2d)
-                ul = nn.gated_resnet(ul, tf.concat(
-                    [u, ul_list.pop()], 3), conv=nn.down_right_shifted_conv2d)
+            print(">", get_resources_info())
+            print("> len(t_u_list):", len(t_u_list))
+            print("> len(t_ul_list):", len(t_ul_list))
+            
+            print("> getting down-pass shifted_deconv2d (4)")
+            
+            t_u = nn.down_shifted_deconv2d(t_u, num_filters=nr_filters, stride=[2, 2])
+            t_ul = nn.down_right_shifted_deconv2d(t_ul, num_filters=nr_filters, stride=[2, 2])
 
-            u = nn.down_shifted_deconv2d(
-                u, num_filters=nr_filters, stride=[2, 2])
-            ul = nn.down_right_shifted_deconv2d(
-                ul, num_filters=nr_filters, stride=[2, 2])
-
-            print("LOOP", "shifted_conv2d (4)", nr_resnet)
+            print(">", get_resources_info())
+            print("> len(t_u_list):", len(t_u_list))
+            print("> len(t_ul_list):", len(t_ul_list))
+            
+            print("> getting down-pass gated_resnet (3)")
             
             for rep in range(nr_resnet + 1):
+                t_u = nn.gated_resnet(t_u, t_u_list.pop(), conv=nn.down_shifted_conv2d)
+                t_ul = nn.gated_resnet(t_ul, tf.concat([t_u, t_ul_list.pop()], 3), conv=nn.down_right_shifted_conv2d)
 
-                u = nn.gated_resnet(
-                    u, u_list.pop(), conv=nn.down_shifted_conv2d)
-                ul = nn.gated_resnet(ul, tf.concat(
-                    [u, ul_list.pop()], 3), conv=nn.down_right_shifted_conv2d)
+            print(">", get_resources_info())
+            print("> len(t_u_list):", len(t_u_list))
+            print("> len(t_ul_list):", len(t_ul_list))
 
-            u = nn.down_shifted_deconv2d(
-                u, num_filters=nr_filters, stride=[2, 2])
-            ul = nn.down_right_shifted_deconv2d(
-                ul, num_filters=nr_filters, stride=[2, 2])
+            print("> getting down-pass shifted_deconv2d (2)")
+            
+            t_u = nn.down_shifted_deconv2d(t_u, num_filters=nr_filters, stride=[2, 2])
+            t_ul = nn.down_right_shifted_deconv2d(t_ul, num_filters=nr_filters, stride=[2, 2])
 
-            print("LOOP", "shifted_conv2d (5)", nr_resnet)
+            print(">", get_resources_info())
+            print("> len(t_u_list):", len(t_u_list))
+            print("> len(t_ul_list):", len(t_ul_list))
+
+            print("> getting down-pass gated_resnet (1)")
             
             for rep in range(nr_resnet + 1):
+                t_u = nn.gated_resnet(t_u, t_u_list.pop(), conv=nn.down_shifted_conv2d)
+                t_ul = nn.gated_resnet(t_ul, tf.concat([t_u, t_ul_list.pop()], 3), conv=nn.down_right_shifted_conv2d)
 
-                u = nn.gated_resnet(
-                    u, u_list.pop(), conv=nn.down_shifted_conv2d)
-                ul = nn.gated_resnet(ul, tf.concat(
-                    [u, ul_list.pop()], 3), conv=nn.down_right_shifted_conv2d)
+            print(">", get_resources_info())
+            print("> len(t_u_list):", len(t_u_list))
+            print("> len(t_ul_list):", len(t_ul_list))
 
+            del t_u
+            gc.collect()
+
+            assert len(t_u_list) == 0
+            assert len(t_ul_list) == 0
+
+            del t_u_list
+            del t_ul_list
+            gc.collect()
+
+            print(">", get_resources_info())            
+            
+            print("> getting nin")
             if data_set == 'cifar':
-                x_out = nn.nin(tf.nn.elu(ul), 10 * nr_logistic_mix)
+                x_out = nn.nin(tf.nn.elu(t_ul), 10 * nr_logistic_mix)
             elif data_set == 'f_mnist':
-                x_out = nn.nin(tf.nn.elu(ul), 3 * nr_logistic_mix)
+                x_out = nn.nin(tf.nn.elu(t_ul), 3 * nr_logistic_mix)
             else:
                 raise NotImplementedError("data_set {} not recognized".format(data_set))
 
-            assert len(u_list) == 0
-            assert len(ul_list) == 0
+            del t_ul
+            gc.collect()
+
+            print(">", get_resources_info())            
 
             return x_out
